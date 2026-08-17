@@ -1,8 +1,10 @@
 # F1 Universal REV & Flag Light System
 
-A DIY **Arduino + WS2812B/NeoPixel REV light and flag indicator system** for F1 games.
+A DIY **Arduino + WS2812B/NeoPixel dynamic REV light and flag indicator system** for F1 games.
 
-The system uses a 48-LED addressable strip connected to an Arduino. Game telemetry is received through UDP by a Python program and converted into serial commands for the Arduino.
+The system uses a 48-LED addressable strip connected to an Arduino. Game telemetry is received through UDP by a game-specific Python program, processed into RPM, redline, and flag information, and then sent to the Arduino through USB serial.
+
+The Arduino uses the same universal firmware for every supported game.
 
 ## Supported Games
 
@@ -10,27 +12,80 @@ The system uses a 48-LED addressable strip connected to an Arduino. Game telemet
 * **F1 22**
 * **F1 25**
 
-The Arduino firmware is **universal for all supported games**.
-
-> **Important:** This project does **not** include race-start lights. The 8 outer LEDs are used only for flag indications.
+> **Important:** This version does not include race-start lights. The 8 outer LEDs are dedicated to flag indications.
 
 ---
 
 # Features
 
-* 🟢 Dynamic RPM/REV lights
-* 🟡 Yellow RPM range
-* 🟠 Orange RPM range
-* 🔴 Redline
-* 🔄 REV lights illuminate from the outside toward the center
-* 🟡 Yellow flag
-* 🔴 Red flag
-* 🟢 Green flag
-* 💡 Blinking flag indicators
-* ⏱️ Green flag automatically turns off
-* 🛑 LEDs automatically turn off when telemetry is lost
-* 🎮 Separate Python telemetry programs for F1 2020, F1 22 and F1 25
-* 🔧 One universal Arduino firmware for all supported games
+### Dynamic REV / RPM System
+
+* Dynamic RPM-based REV lights
+* Dynamic maximum RPM / redline
+* Game-specific telemetry adapters
+* Automatic `MAXRPM` updates
+* Works with different cars and RPM limits
+* Outside-to-center REV illumination
+* Green → Yellow → Orange → Red RPM progression
+* 40 dedicated REV LEDs
+
+### Flag System
+
+* Yellow flag
+* Red flag
+* Green flag
+* Blue flag ignored
+* Blinking flag indicators
+* Automatic green-flag timeout
+* Independent flag and REV systems
+
+### Safety / Connection Features
+
+* Automatic LED shutdown when telemetry is lost
+* Universal Arduino firmware
+* Same LED layout for every supported game
+* Game-specific Python telemetry parsers
+
+---
+
+# How Dynamic REV Works
+
+Unlike a fixed RPM system, the REV LEDs do **not** assume one maximum RPM for every car.
+
+The Python telemetry program obtains the appropriate RPM limit/redline information from the game's telemetry and sends it to the Arduino.
+
+For example:
+
+```text
+Game telemetry
+      │
+      ├── Current RPM
+      │
+      └── Maximum RPM / redline
+              │
+              ▼
+       Python game adapter
+              │
+              ├── RPM:8500
+              │
+              └── MAXRPM:15000
+              │
+              ▼
+       Universal Arduino
+              │
+              ▼
+          40 REV LEDs
+```
+
+The Arduino then calculates the REV LED position from:
+
+```text
+Current RPM
+     ÷
+Maximum RPM
+```
+
+This means the same Arduino firmware can work with different RPM limits without manually changing the Arduino code.
 
 ---
 
@@ -38,17 +93,17 @@ The Arduino firmware is **universal for all supported games**.
 
 ## Required
 
-* Arduino Uno/Nano or compatible Arduino
+* Arduino Uno / Nano or compatible Arduino
 * WS2812B / NeoPixel addressable LED strip
 * 48 LEDs
 * USB cable
-* PC running the supported F1 game
+* PC running a supported F1 game
 
 ---
 
 # LED Layout
 
-The 48 LEDs are divided into two sections:
+The 48 LEDs are divided into three sections:
 
 ```text
 LED 0 - 3       = Left flag LEDs
@@ -93,82 +148,115 @@ F1-REV-Light-System/
 
 ### `f1_rev.py`
 
-Python telemetry program for **F1 2020**.
+Telemetry adapter for **F1 2020**.
+
+Handles:
+
+* RPM
+* Dynamic maximum RPM
+* Yellow flag
+* Red flag
+* Green flag
+* Telemetry timeout
 
 ### `f122_rev.py`
 
-Python telemetry program for **F1 22**.
+Telemetry adapter for **F1 22**.
+
+Handles:
+
+* RPM
+* Dynamic maximum RPM
+* Yellow flag
+* Red flag
+* Green flag
+* Telemetry timeout
+* F1 22 UDP packet format
 
 ### `f125_rev.py`
 
-Python telemetry program for **F1 25**.
+Telemetry adapter for **F1 25**.
+
+Handles:
+
+* RPM
+* Dynamic maximum RPM
+* Yellow flag
+* Red flag
+* Green flag
+* Telemetry timeout
+* F1 25 UDP packet format
 
 ### `universal_arduino.ino`
 
-Universal Arduino firmware used by all supported games.
+Game-independent Arduino firmware.
+
+It receives standardized commands from the Python programs and controls the 48 LEDs.
 
 ---
 
-# How It Works
+# System Architecture
+
+```text
+                       ┌──────────────┐
+                       │   F1 2020    │
+                       └──────┬───────┘
+                              │ UDP
+                              ▼
+                       ┌──────────────┐
+                       │  f1_rev.py   │
+                       └──────┬───────┘
+                              │
+                              │
+┌──────────────┐              │              ┌──────────────┐
+│    F1 22     │              │              │    F1 25     │
+└──────┬───────┘              │              └──────┬───────┘
+       │ UDP                   │                   │ UDP
+       ▼                       ▼                   ▼
+┌──────────────┐       ┌────────────────┐   ┌──────────────┐
+│f122_rev.py   │       │ Universal      │   │f125_rev.py   │
+└──────┬───────┘       │ Arduino        │   └──────┬───────┘
+       │               │ Firmware       │           │
+       └──────────────►│                │◄──────────┘
+                       └───────┬────────┘
+                               │
+                               ▼
+                         ┌───────────┐
+                         │ 48 LEDs   │
+                         └───────────┘
+```
+
+Every Python program converts its game's telemetry into the same Arduino command protocol.
+
+---
+
+# Telemetry Flow
 
 ```text
 F1 Game
    │
-   │ UDP Telemetry
+   │ UDP telemetry
    ▼
-Python Telemetry Script
+Python Adapter
+   │
+   ├── Current RPM
+   ├── Maximum RPM / redline
+   ├── Flag state
+   └── Telemetry status
    │
    │ USB Serial
    ▼
 Arduino
    │
-   ▼
-48 LED Strip
-```
-
-For F1 2020:
-
-```text
-F1 2020
-   ↓
-f1_rev.py
-   ↓
-Arduino
-   ↓
-48 LEDs
-```
-
-For F1 22:
-
-```text
-F1 22
-   ↓
-f122_rev.py
-   ↓
-Arduino
-   ↓
-48 LEDs
-```
-
-For F1 25:
-
-```text
-F1 25
-   ↓
-f125_rev.py
-   ↓
-Arduino
-   ↓
-48 LEDs
+   ├── REV LEDs
+   └── Flag LEDs
 ```
 
 ---
 
 # F1 Telemetry Configuration
 
-The game must be configured to send UDP telemetry to the PC running the Python script.
-
-For all supported games, this project uses:
+The supported games use:
 
 ```text
 UDP Telemetry = On
@@ -178,7 +266,7 @@ UDP Port      = 20777
 Send Rate     = 60 Hz
 ```
 
-`127.0.0.1` is used because the game and Python program are running on the same PC.
+`127.0.0.1` is used because the game and Python telemetry program are running on the same PC.
 
 ---
 
@@ -191,7 +279,7 @@ Settings
 → Telemetry Settings
 ```
 
-Use:
+Configure:
 
 | Setting            | Value         |
 | ------------------ | ------------- |
@@ -202,7 +290,7 @@ Use:
 | UDP Send Rate      | **60 Hz**     |
 | UDP Format         | **2020**      |
 
-### Final F1 2020 configuration
+Final configuration:
 
 ```text
 UDP Telemetry       = On
@@ -213,20 +301,20 @@ UDP Send Rate       = 60 Hz
 UDP Format          = 2020
 ```
 
-Then run:
+Run:
 
 ```bash
 python f1_rev.py
 ```
 
-You should see:
+Expected:
 
 ```text
 Arduino connected on COM4
 Waiting for F1 2020 telemetry...
 ```
 
-Enter a driving session and the REV LEDs should respond to RPM.
+Once you enter a driving session, the REV LEDs should respond dynamically to engine RPM.
 
 ---
 
@@ -250,7 +338,7 @@ Configure:
 | UDP Send Rate      | **60 Hz**     |
 | UDP Format         | **2022**      |
 
-### Final F1 22 configuration
+Final configuration:
 
 ```text
 UDP Telemetry       = On
@@ -263,35 +351,18 @@ UDP Format          = 2022
 
 > **Important:** F1 22 must use the **2022 UDP telemetry format**. Do not use the F1 25 or 2026 format with `f122_rev.py`.
 
-Then run:
+Run:
 
 ```bash
 python f122_rev.py
 ```
 
-You should see:
+Expected:
 
 ```text
 Arduino connected on COM4
 Waiting for F1 22 telemetry...
 ```
-
-Enter a driving session and the REV LEDs should respond to RPM.
-
-### F1 22 Telemetry
-
-The F1 22 Python program handles:
-
-* 🟢 Engine RPM telemetry
-* 🟡 Yellow flag detection
-* 🔴 Red flag detection
-* 🟢 Green flag detection
-* ❌ Blue flag ignored
-* 🛑 Automatic LED shutdown when telemetry is lost
-
-The F1 22 program reads the game's **Car Telemetry**, **Car Status**, **Lap Data**, and **Session** telemetry packets.
-
-The flag system can use both FIA flag information and marshal-zone information to detect track flags.
 
 ---
 
@@ -313,19 +384,21 @@ Configure:
 | UDP IP Address     | **127.0.0.1** |
 | UDP Port           | **20777**     |
 | UDP Send Rate      | **60 Hz**     |
-| UDP Format / Mode  | **F1 25**     |
+| UDP Mode           | **F1 25**     |
 
-## ⚠️ Important F1 25 UDP Mode
-
-Select:
+Use:
 
 ```text
 F1 25
 ```
 
-The `f125_rev.py` program in this repository is intended for the **F1 25 UDP telemetry format**, not the separate **2026 Season Pack UDP specification**.
+and **not**:
 
-### Final F1 25 configuration
+```text
+F1 25: 2026 Season Pack
+```
+
+Final configuration:
 
 ```text
 UDP Telemetry       = On
@@ -333,53 +406,308 @@ UDP Broadcast       = Off
 UDP IP Address      = 127.0.0.1
 UDP Port            = 20777
 UDP Send Rate       = 60 Hz
-UDP Format / Mode   = 2025
+UDP Mode            = F1 25
 ```
 
-Then run:
+Run:
 
 ```bash
 python f125_rev.py
 ```
 
-You should see:
+Expected:
 
 ```text
 Arduino connected on COM4
 Waiting for F1 25 telemetry...
 ```
 
-Enter a driving session and the REV LEDs should respond to RPM.
+---
+
+# Dynamic REV System
+
+The REV system uses two values:
+
+```text
+Current RPM
+Maximum RPM
+```
+
+Example:
+
+```text
+RPM:8500
+MAXRPM:15000
+```
+
+The Arduino calculates:
+
+```text
+RPM percentage = Current RPM / Maximum RPM
+```
+
+For example:
+
+```text
+8500 / 15000 = 56.7%
+```
+
+The REV system then illuminates approximately:
+
+```text
+56.7% × 40 LEDs
+```
+
+which is approximately:
+
+```text
+23 LEDs
+```
 
 ---
 
-# UDP Port
+# Dynamic RPM Color Zones
 
-The project uses:
+The REV system progressively changes color as RPM increases.
+
+| RPM Range | Color     |
+| --------- | --------- |
+| 0–60%     | 🟢 Green  |
+| 60–75%    | 🟡 Yellow |
+| 75–90%    | 🟠 Orange |
+| 90–100%   | 🔴 Red    |
+
+The exact LED transition is calculated dynamically from the current maximum RPM.
+
+This means the color ranges automatically scale with the car's RPM range.
+
+---
+
+# Outside-to-Center Animation
+
+The 40 REV LEDs illuminate from the outside toward the center.
 
 ```text
-20777
+Low RPM
+
+🟢                                🟢
+
+
+Medium RPM
+
+🟢🟢🟢🟡                    🟡🟢🟢🟢
+
+
+High RPM
+
+🟢🟢🟡🟡🟠🔴          🔴🟠🟡🟡🟢🟢
+
+
+Redline
+
+🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴
 ```
 
-The Python programs listen on:
+The system mirrors the REV display so both sides illuminate toward the center.
 
-```python
-UDP_IP = "127.0.0.1"
-UDP_PORT = 20777
-```
+---
 
-The game and Python program must use the same port.
+# Dynamic Maximum RPM
+
+The Arduino accepts:
 
 ```text
-F1 Game
-UDP Port: 20777
-      │
-      ▼
+MAXRPM:xxxx
+```
+
+Example:
+
+```text
+MAXRPM:15000
+```
+
+The Python telemetry adapter can update this value when necessary.
+
+The Arduino does **not** need to know which game is running.
+
+For example:
+
+```text
+F1 2020
+    ↓
+f1_rev.py
+    ↓
+MAXRPM:15000
+```
+
+or:
+
+```text
+F1 22
+    ↓
+f122_rev.py
+    ↓
+MAXRPM:15000
+```
+
+or:
+
+```text
+F1 25
+    ↓
+f125_rev.py
+    ↓
+MAXRPM:15000
+```
+
+The Arduino handles all three identically.
+
+---
+
+# Important Dynamic RPM Design
+
+The game-specific Python programs are responsible for determining the appropriate maximum RPM value.
+
+The Arduino only receives normalized information:
+
+```text
+RPM:current
+MAXRPM:maximum
+```
+
+This separation keeps the Arduino firmware universal.
+
+```text
+Game-specific logic
+        ↓
 Python
-UDP Port: 20777
+        ↓
+Standard command protocol
+        ↓
+Universal Arduino
 ```
 
-If the game uses another port, change the Python configuration to match.
+This also makes future games easier to support.
+
+---
+
+# Flag System
+
+The outer 8 LEDs are dedicated to flags.
+
+```text
+LEFT FLAGS                         RIGHT FLAGS
+
+0  1  2  3                         44 45 46 47
+████████                           ████████
+```
+
+The flag system is independent of the REV LEDs.
+
+---
+
+# Yellow Flag
+
+Command:
+
+```text
+YELLOW
+```
+
+The 8 outer LEDs blink yellow.
+
+```text
+🟡🟡🟡🟡          🟡🟡🟡🟡
+```
+
+---
+
+# Red Flag
+
+Command:
+
+```text
+RED
+```
+
+The 8 outer LEDs blink red.
+
+```text
+🔴🔴🔴🔴          🔴🔴🔴🔴
+```
+
+---
+
+# Green Flag
+
+Command:
+
+```text
+GREEN
+```
+
+The 8 outer LEDs illuminate green.
+
+```text
+🟢🟢🟢🟢          🟢🟢🟢🟢
+```
+
+The green indication automatically turns off after the configured duration.
+
+---
+
+# Blue Flag
+
+The Arduino supports the command:
+
+```text
+BLUE
+```
+
+However, the current F1 telemetry implementation does not use blue flags.
+
+Therefore:
+
+```text
+Blue flag = ignored
+```
+
+---
+
+# Clearing Flags
+
+The Python programs can send:
+
+```text
+NONE
+```
+
+to clear the active flag.
+
+The REV LEDs continue operating independently.
+
+---
+
+# Automatic Telemetry Shutdown
+
+If telemetry is not received for approximately **3 seconds**, the system automatically turns the LEDs off.
+
+The system sends:
+
+```text
+OFF
+```
+
+This protects against the REV display becoming frozen at the last telemetry value.
+
+It is useful when:
+
+* The game is closed
+* The game crashes
+* UDP telemetry stops
+* The Python program stops
+* The session ends
+* The Arduino connection is interrupted
 
 ---
 
@@ -397,20 +725,28 @@ Upload:
 universal_arduino.ino
 ```
 
-The default configuration is:
+Default configuration:
 
 ```cpp
 #define LED_PIN 6
 #define NUM_LEDS 48
 ```
 
-If your LED data wire uses another Arduino pin, change `LED_PIN`.
+If the LED data wire is connected to another Arduino pin, change:
+
+```cpp
+#define LED_PIN 6
+```
+
+to the appropriate pin.
 
 ---
 
 # Arduino Serial Configuration
 
-The Python programs communicate with the Arduino using:
+The Python programs communicate with the Arduino through USB serial.
+
+Default:
 
 ```text
 COM4
@@ -424,25 +760,25 @@ ARDUINO_PORT = "COM4"
 ARDUINO_BAUD = 9600
 ```
 
-If your Arduino is on another COM port, change it.
-
-Example:
+If Windows assigns another COM port:
 
 ```python
 ARDUINO_PORT = "COM5"
 ```
 
+For example.
+
 ## Important
 
-Close:
+Close any application using the Arduino COM port, including:
 
 * Arduino Serial Monitor
 * Arduino Serial Plotter
 * SimHub
-* Other Python scripts
-* Any other program using the Arduino COM port
+* Other Python telemetry scripts
+* Other serial terminal software
 
-Otherwise Windows can show:
+Otherwise Windows may report:
 
 ```text
 PermissionError: [WinError 5] Access is denied
@@ -450,174 +786,89 @@ PermissionError: [WinError 5] Access is denied
 
 ---
 
-# REV / RPM System
+# Arduino Command Protocol
 
-The 40 center LEDs display engine RPM.
+The universal Arduino understands the following commands:
 
-The LEDs illuminate:
-
-```text
-OUTSIDE → CENTER ← OUTSIDE
-```
+| Command       | Function             |
+| ------------- | -------------------- |
+| `RPM:xxxx`    | Update current RPM   |
+| `MAXRPM:xxxx` | Update maximum RPM   |
+| `YELLOW`      | Activate yellow flag |
+| `RED`         | Activate red flag    |
+| `BLUE`        | Activate blue flag   |
+| `GREEN`       | Activate green flag  |
+| `NONE`        | Clear flag           |
+| `OFF`         | Turn all LEDs off    |
 
 Example:
 
 ```text
-Low RPM
-
-🟢                                🟢
-
-
-Medium RPM
-
-🟢🟢🟢🟡                    🟡🟢🟢🟢
-
-
-Near Redline
-
-🟢🟢🟡🟡🟠🔴          🔴🟠🟡🟡🟢🟢
-```
-
-## RPM Colors
-
-| RPM Stage | Color     |
-| --------- | --------- |
-| Low       | 🟢 Green  |
-| Medium    | 🟡 Yellow |
-| High      | 🟠 Orange |
-| Redline   | 🔴 Red    |
-
-The Arduino receives RPM commands such as:
-
-```text
+MAXRPM:15000
 RPM:8500
 ```
 
+The Arduino calculates the REV position dynamically.
+
 ---
 
-# Automatic RPM Scaling
+# Example Dynamic REV Sequence
 
-The Arduino supports:
-
-```text
-MAXRPM:xxxx
-```
-
-For example:
+Suppose the telemetry reports:
 
 ```text
 MAXRPM:15000
 ```
 
-This allows different cars with different RPM limits to use the same REV system.
-
-The long-term goal is for the Python telemetry programs to automatically determine the appropriate maximum RPM from the car telemetry.
-
----
-
-# Flag System
-
-The outer 8 LEDs are used for flags.
+At:
 
 ```text
-LEFT FLAGS                         RIGHT FLAGS
-
-0  1  2  3                         44 45 46 47
-████████                           ████████
+RPM:6000
 ```
 
-Supported flags:
-
-* Yellow
-* Red
-* Blue
-* Green
-
----
-
-# Yellow Flag
-
-The 8 flag LEDs blink yellow.
+the REV display is approximately:
 
 ```text
-🟡🟡🟡🟡          🟡🟡🟡🟡
+40%
 ```
 
-Command:
+At:
 
 ```text
-YELLOW
+RPM:9000
 ```
 
----
-
-# Red Flag
-
-The 8 flag LEDs blink red.
+the REV display is approximately:
 
 ```text
-🔴🔴🔴🔴          🔴🔴🔴🔴
+60%
 ```
 
-Command:
+At:
 
 ```text
-RED
+RPM:12000
 ```
 
----
-
-# Green Flag
-
-The 8 flag LEDs illuminate green.
+the REV display is approximately:
 
 ```text
-🟢🟢🟢🟢          🟢🟢🟢🟢
+80%
 ```
 
-Command:
+At:
 
 ```text
-GREEN
+RPM:15000
 ```
 
-The green indication automatically turns off after the configured duration.
-
----
-
-# Clearing Flags
-
-The Arduino accepts:
+the REV display is:
 
 ```text
-NONE
+100%
 ```
 
-to clear the current flag.
-
-The RPM LEDs continue operating independently.
-
----
-
-# Automatic LED Shutdown
-
-If the Python program stops receiving telemetry for approximately **3 seconds**, the system sends:
-
-```text
-OFF
-```
-
-This turns off the LEDs.
-
-This is useful when:
-
-* The game is closed
-* The game crashes
-* UDP telemetry stops
-* The Python program loses the connection
-* A session ends
-
-The REV LEDs therefore won't remain frozen at the last RPM value.
+The actual number of LEDs is calculated from the 40 available REV LEDs.
 
 ---
 
@@ -625,7 +876,7 @@ The REV LEDs therefore won't remain frozen at the last RPM value.
 
 Install Python 3.
 
-Then install PySerial:
+Install PySerial:
 
 ```bash
 pip install pyserial
@@ -637,6 +888,8 @@ Required package:
 pyserial
 ```
 
+The telemetry programs otherwise use Python's standard networking functionality unless additional dependencies are included by a particular implementation.
+
 ---
 
 # Running F1 2020
@@ -646,7 +899,7 @@ pyserial
 3. Check the Arduino COM port.
 4. Start F1 2020.
 5. Enable UDP telemetry.
-6. Use the F1 2020 settings shown above.
+6. Configure the UDP settings.
 7. Run:
 
 ```bash
@@ -656,7 +909,15 @@ python f1_rev.py
 8. Enter a driving session.
 9. Drive the car.
 
-The REV LEDs should respond to engine RPM.
+The Python program receives telemetry and sends:
+
+```text
+RPM
+MAXRPM
+FLAG
+```
+
+information to the Arduino.
 
 ---
 
@@ -667,8 +928,8 @@ The REV LEDs should respond to engine RPM.
 3. Check the Arduino COM port.
 4. Start F1 22.
 5. Enable UDP telemetry.
-6. Set **UDP Format = 2022**.
-7. Use the F1 22 settings shown above.
+6. Set UDP format to **2022**.
+7. Configure port `20777`.
 8. Run:
 
 ```bash
@@ -678,7 +939,7 @@ python f122_rev.py
 9. Enter a driving session.
 10. Drive the car.
 
-The same Arduino firmware is used.
+The Arduino firmware does not change.
 
 ---
 
@@ -689,37 +950,19 @@ The same Arduino firmware is used.
 3. Check the Arduino COM port.
 4. Start F1 25.
 5. Enable UDP telemetry.
-6. Select **F1 25**, not **F1 25: 2026 Season Pack**.
-7. Use the F1 25 settings shown above.
-8. Run:
+6. Select the **F1 25** UDP mode.
+7. Do not select the separate 2026 Season Pack mode.
+8. Configure port `20777`.
+9. Run:
 
 ```bash
 python f125_rev.py
 ```
 
-9. Enter a driving session.
-10. Drive the car.
+10. Enter a driving session.
+11. Drive the car.
 
 The same Arduino firmware is used.
-
----
-
-# Arduino Command Protocol
-
-The universal Arduino understands:
-
-| Command       | Function            |
-| ------------- | ------------------- |
-| `RPM:xxxx`    | Update REV/RPM LEDs |
-| `MAXRPM:xxxx` | Set maximum RPM     |
-| `YELLOW`      | Yellow flag         |
-| `RED`         | Red flag            |
-| `BLUE`        | Blue flag           |
-| `GREEN`       | Green flag          |
-| `NONE`        | Clear flag          |
-| `OFF`         | Turn all LEDs off   |
-
-There are **no race-start commands** in this version.
 
 ---
 
@@ -736,26 +979,94 @@ IP Address    = 127.0.0.1
 UDP Port      = 20777
 ```
 
-Also make sure the correct UDP format is selected.
+Also verify the correct telemetry format.
 
-For F1 22:
-
-```text
-✅ 2022
-❌ 2025
-❌ 2026
-```
-
-For F1 25:
+### F1 2020
 
 ```text
-✅ 2025
-❌ 2026
+2020
 ```
+
+### F1 22
+
+```text
+2022
+```
+
+### F1 25
+
+```text
+F1 25
+```
+
+Do not use the 2026 Season Pack telemetry mode with the F1 25 adapter.
 
 ---
 
-## Arduino COM port error
+# REV Lights Are Not Responding
+
+Check:
+
+1. UDP telemetry is enabled.
+2. The correct Python program is running.
+3. The correct telemetry format is selected.
+4. UDP port is `20777`.
+5. IP address is `127.0.0.1`.
+6. Arduino is connected.
+7. Python is using the correct COM port.
+8. Arduino baud rate is `9600`.
+9. The LED data line is connected correctly.
+10. The LED strip has an adequate power supply and common ground with the Arduino.
+
+---
+
+# REV Lights Use the Wrong RPM Range
+
+The dynamic system depends on the Python adapter providing the correct:
+
+```text
+MAXRPM
+```
+
+Check that the Python program is sending a value such as:
+
+```text
+MAXRPM:15000
+```
+
+The Arduino does not identify the game or vehicle.
+
+It simply uses:
+
+```text
+Current RPM
+      ÷
+Maximum RPM
+```
+
+to calculate the REV position.
+
+---
+
+# Flags Are Not Detected
+
+Flag detection is handled by the game-specific Python telemetry adapter.
+
+The Arduino only displays the command it receives:
+
+```text
+YELLOW
+RED
+GREEN
+BLUE
+NONE
+```
+
+Different F1 games expose flag information differently, so each Python adapter must interpret its game's telemetry correctly.
+
+---
+
+# Arduino COM Port Error
 
 If you see:
 
@@ -763,73 +1074,92 @@ If you see:
 PermissionError: [WinError 5] Access is denied
 ```
 
-close Arduino Serial Monitor and any other software using the Arduino.
+close:
+
+```text
+Arduino Serial Monitor
+Arduino Serial Plotter
+SimHub
+Other Python scripts
+Serial terminal programs
+```
+
+Then restart the Python program.
 
 ---
 
-## REV lights are not responding
+# Telemetry Timeout
+
+If the LEDs turn off after several seconds, this normally means the Python program stopped receiving telemetry.
 
 Check:
 
-1. UDP telemetry is enabled.
-2. Correct UDP format is selected.
-3. UDP port is `20777`.
-4. IP address is `127.0.0.1`.
-5. Correct Python script is running.
-6. Arduino is connected to the correct COM port.
-7. LED power and data connections are correct.
-
----
-
-## Flags are not detected
-
-The Arduino supports:
-
 ```text
-YELLOW
-RED
-BLUE
-GREEN
+Game running
+      ↓
+UDP telemetry enabled
+      ↓
+127.0.0.1
+      ↓
+Port 20777
+      ↓
+Correct Python adapter
 ```
 
-but **flag detection is handled by the game-specific Python program**.
-
-Different F1 games expose flag information differently, so the Python telemetry parser must correctly interpret that game's telemetry.
-
-The Arduino itself only displays the command it receives.
+The timeout is intentional and prevents stale RPM/flag information from remaining displayed.
 
 ---
 
-# Universal Arduino Design
+# Universal Arduino Architecture
 
 The Arduino firmware is completely game-independent.
 
 ```text
-             F1 2020
-                │
-                ▼
-           f1_rev.py
-                │
-                │
-                ▼
-        ┌───────────────┐
-        │   Universal   │
-        │    Arduino    │
-        └───────┬───────┘
-                │
-                ▼
-             48 LEDs
-                ▲
-                │
-        ┌───────┴───────┐
-        │               │
-     F1 22           F1 25
-        │               │
-        ▼               ▼
-   f122_rev.py    f125_rev.py
+F1 2020 ──► f1_rev.py ─────┐
+                            │
+F1 22 ────► f122_rev.py ────┼──► Universal Arduino ──► 48 LEDs
+                            │
+F1 25 ────► f125_rev.py ────┘
 ```
 
-This means future racing games can be supported by creating another Python telemetry adapter without changing the Arduino firmware.
+Each Python adapter performs the game-specific work.
+
+The Arduino receives the same standardized commands regardless of the game.
+
+---
+
+# Why Use Dynamic REV?
+
+A fixed RPM configuration assumes every car has the same RPM range.
+
+That is not ideal for a universal sim-racing system.
+
+With dynamic RPM:
+
+```text
+Current RPM
+     │
+     ▼
+Game telemetry
+     │
+     ├── Maximum RPM
+     │
+     ▼
+Python adapter
+     │
+     ▼
+Universal Arduino
+```
+
+The REV display automatically scales to the configured maximum RPM.
+
+This makes the system more suitable for different cars and future telemetry implementations.
+
+---
+
+# Future Game Support
+
+The universal Arduino architecture allows additional racing games to be added without rewriting the Arduino firmware.
 
 For example:
 
@@ -838,10 +1168,14 @@ Assetto Corsa
       ↓
 assetto_corsa.py
       ↓
-RPM / Flags
+RPM + MAXRPM + FLAGS
       ↓
 Universal Arduino
+      ↓
+48 LEDs
 ```
+
+A future adapter only needs to convert the game's telemetry into the existing command protocol.
 
 ---
 
@@ -851,9 +1185,16 @@ Universal Arduino
 
 * [x] UDP telemetry
 * [x] RPM/REV lights
+* [x] Dynamic RPM scaling
+* [x] Dynamic maximum RPM
 * [x] Outside-to-center REV animation
-* [x] Green/yellow/orange/red RPM progression
-* [x] Flag system
+* [x] Green RPM range
+* [x] Yellow RPM range
+* [x] Orange RPM range
+* [x] Redline
+* [x] Yellow flag
+* [x] Red flag
+* [x] Green flag
 * [x] Automatic telemetry timeout
 * [x] Universal Arduino
 
@@ -861,25 +1202,36 @@ Universal Arduino
 
 * [x] UDP telemetry
 * [x] RPM/REV lights
+* [x] Dynamic RPM scaling
+* [x] Dynamic maximum RPM
 * [x] Outside-to-center REV animation
-* [x] Green/yellow/orange/red RPM progression
+* [x] Green RPM range
+* [x] Yellow RPM range
+* [x] Orange RPM range
+* [x] Redline
 * [x] Yellow flag
 * [x] Red flag
 * [x] Green flag
-* [x] Blue flag disabled
+* [x] Blue flag ignored
 * [x] Automatic telemetry timeout
-* [x] Universal Arduino
 * [x] F1 22 UDP format
+* [x] Universal Arduino
 
 ## F1 25
 
 * [x] UDP telemetry
 * [x] RPM/REV lights
+* [x] Dynamic RPM scaling
+* [x] Dynamic maximum RPM
 * [x] Outside-to-center REV animation
-* [x] Universal Arduino
+* [x] Green RPM range
+* [x] Yellow RPM range
+* [x] Orange RPM range
+* [x] Redline
 * [x] Flag system
 * [x] Automatic telemetry timeout
 * [x] F1 25 UDP mode
+* [x] Universal Arduino
 
 ---
 
@@ -896,23 +1248,29 @@ Universal Arduino
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**48 LEDs total:**
+### 48 LEDs Total
 
-* 4 left flag LEDs
-* 40 REV/RPM LEDs
-* 4 right flag LEDs
+```text
+4 × Left Flag
+40 × REV / RPM
+4 × Right Flag
+```
 
 ---
 
 # Telemetry Documentation
 
-For F1 2020, the telemetry configuration follows the F1 2020 UDP telemetry specification.
+The telemetry adapters are designed around the UDP telemetry formats provided for the respective F1 games.
 
-For F1 22, use the **F1 22 UDP telemetry format (`2022`)**.
+For:
 
-For F1 25, use the **F1 25 UDP mode** and not the separate **2026 Season Pack UDP mode**.
+```text
+F1 2020 → F1 2020 UDP format
+F1 22   → F1 22 / 2022 UDP format
+F1 25   → F1 25 UDP mode
+```
 
-EA provides the F1 telemetry specifications through its F1 Game Info Hub.
+The F1 25 adapter is intended for the **F1 25 telemetry mode**, not the separate 2026 Season Pack telemetry specification.
 
 ---
 
@@ -920,4 +1278,6 @@ EA provides the F1 telemetry specifications through its F1 Game Info Hub.
 
 This is a personal/community DIY sim-racing project.
 
-F1, F1 2020, F1 22, F1 25 and related game assets are trademarks of their respective owners. This project is not affiliated with or endorsed by EA, Codemasters, or Formula 1.
+F1, F1 2020, F1 22, F1 25 and related game assets are trademarks of their respective owners.
+
+This project is not affiliated with or endorsed by **EA, Codemasters, or Formula 1**.
