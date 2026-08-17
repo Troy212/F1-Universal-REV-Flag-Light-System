@@ -86,6 +86,15 @@ last_start_lights = 0
 
 
 # =========================================================
+# RPM
+# =========================================================
+
+current_rpm = 0
+current_max_rpm = 12000
+last_sent_max_rpm = 0
+
+
+# =========================================================
 # SEND COMMAND TO ARDUINO
 # =========================================================
 
@@ -114,12 +123,15 @@ def turn_off():
     global leds_off
     global race_start_active
     global last_start_lights
+    global current_rpm
 
     current_flag = "NONE"
 
     race_start_active = False
 
     last_start_lights = 0
+
+    current_rpm = 0
 
     send("OFF")
 
@@ -204,10 +216,6 @@ while True:
 
         except socket.timeout:
 
-            # ---------------------------------------------
-            # NO TELEMETRY FOR 3 SECONDS
-            # ---------------------------------------------
-
             if (
                 time.monotonic()
                 - last_telemetry_time
@@ -258,8 +266,6 @@ while True:
         # DEBUG FORMAT
         # =================================================
 
-        # Only print once when useful
-
         if packet_id == 6:
 
             print(
@@ -284,18 +290,12 @@ while True:
 
         # =================================================
         # PACKET 1
-        #
         # SESSION
         # =================================================
 
         if packet_id == 1:
 
-            # We only need basic pause handling here.
-
             if len(data) >= 44:
-
-                # m_gamePaused is after the first session
-                # fields in the F1 UDP session packet.
 
                 paused = data[43]
 
@@ -326,7 +326,6 @@ while True:
 
         # =================================================
         # PACKET 3
-        #
         # EVENT
         # =================================================
 
@@ -433,13 +432,6 @@ while True:
 
         elif packet_id == 6:
 
-            # F1 25 Car Telemetry:
-            #
-            # Header = 29
-            # CarTelemetryData = 60
-            #
-            # Packet size = 1352
-
             if len(data) < 29:
 
                 continue
@@ -467,16 +459,6 @@ while True:
 
             # =================================================
             # ENGINE RPM
-            #
-            # CarTelemetryData:
-            #
-            # 0  speed
-            # 2  throttle
-            # 6  steer
-            # 10 brake
-            # 14 clutch
-            # 15 gear
-            # 16 engine RPM
             # =================================================
 
             rpm = struct.unpack_from(
@@ -484,6 +466,9 @@ while True:
                 data,
                 car_offset + 16
             )[0]
+
+
+            current_rpm = rpm
 
 
             # =================================================
@@ -502,7 +487,8 @@ while True:
 
 
                 print(
-                    f"\rRPM: {rpm:5} | "
+                    f"\rRPM: {rpm:5} / "
+                    f"MAX: {current_max_rpm:5} | "
                     f"FLAG: {current_flag}",
                     end=""
                 )
@@ -517,13 +503,6 @@ while True:
         # =================================================
 
         elif packet_id == 7:
-
-            # F1 25:
-            #
-            # Header = 29
-            # CarStatusData = 55
-            #
-            # Packet size = 1239
 
             if len(data) < 29:
 
@@ -553,73 +532,54 @@ while True:
             # =================================================
             # CAR STATUS STRUCTURE
             #
-            # Offset 0:
-            # tractionControl
-            #
-            # 1:
-            # antiLockBrakes
-            #
-            # 2:
-            # fuelMix
-            #
-            # 3:
-            # frontBrakeBias
-            #
-            # 4:
-            # pitLimiterStatus
-            #
-            # 5-8:
-            # fuelInTank
-            #
-            # 9-12:
-            # fuelCapacity
-            #
-            # 13-16:
-            # fuelRemainingLaps
-            #
-            # 17-18:
-            # maxRPM
-            #
-            # 19-20:
-            # idleRPM
-            #
-            # 21:
-            # maxGears
-            #
-            # 22:
-            # drsAllowed
-            #
-            # 23-24:
-            # drsActivationDistance
-            #
-            # 25:
-            # actualTyreCompound
-            #
-            # 26:
-            # visualTyreCompound
-            #
-            # 27:
-            # tyresAgeLaps
-            #
-            # 28:
-            # vehicleFiaFlags
+            # 17-18 = maxRPM
+            # 19-20 = idleRPM
+            # 28    = vehicleFiaFlags
             # =================================================
 
+            MAX_RPM_OFFSET = 17
 
             FIA_FLAG_OFFSET = 28
 
 
-            fia_flag = struct.unpack_from(
-                "<b",
+            # =================================================
+            # MAX RPM
+            # =================================================
+
+            max_rpm = struct.unpack_from(
+                "<H",
                 data,
-                car_offset + FIA_FLAG_OFFSET
+                car_offset + MAX_RPM_OFFSET
             )[0]
+
+
+            if max_rpm > 0:
+
+                current_max_rpm = max_rpm
+
+
+                # Only send when the value changes.
+                # This automatically updates when changing car.
+
+                if current_max_rpm != last_sent_max_rpm:
+
+                    send(
+                        f"MAXRPM:{current_max_rpm}"
+                    )
+
+                    last_sent_max_rpm = (
+                        current_max_rpm
+                    )
+
+
+                    print(
+                        f"\nCAR MAX RPM: "
+                        f"{current_max_rpm}"
+                    )
 
 
             # =================================================
             # NETWORK PAUSED
-            #
-            # Later in CarStatusData
             # =================================================
 
             NETWORK_PAUSED_OFFSET = 54
@@ -659,6 +619,13 @@ while True:
             # =================================================
             # FIA FLAG DEBUG
             # =================================================
+
+            fia_flag = struct.unpack_from(
+                "<b",
+                data,
+                car_offset + FIA_FLAG_OFFSET
+            )[0]
+
 
             if fia_flag != last_flag:
 

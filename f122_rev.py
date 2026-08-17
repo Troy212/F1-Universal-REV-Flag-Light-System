@@ -7,32 +7,6 @@ import time
 # =========================================================
 # F1 22 REV + FLAG SYSTEM
 # =========================================================
-#
-# Arduino code is unchanged.
-#
-# Arduino commands used:
-#
-#   RPM:xxxx
-#   MAXRPM:xxxx
-#   YELLOW
-#   RED
-#   GREEN
-#   NONE
-#   OFF
-#
-# BLUE FLAG IS DISABLED.
-#
-# F1 22 UDP format:
-#   2022
-#
-# UDP:
-#   127.0.0.1:20777
-# =========================================================
-
-
-# =========================================================
-# SETTINGS
-# =========================================================
 
 UDP_IP = "127.0.0.1"
 UDP_PORT = 20777
@@ -55,17 +29,10 @@ PACKET_EVENT = 3
 PACKET_CAR_TELEMETRY = 6
 PACKET_CAR_STATUS = 7
 
-
-# F1 22 header is 24 bytes.
 HEADER_SIZE = 24
 
-# F1 22 CarTelemetryData is 60 bytes.
 CAR_TELEMETRY_SIZE = 60
-
-# F1 22 CarStatusData is 47 bytes.
 CAR_STATUS_SIZE = 47
-
-# F1 22 LapData is 43 bytes.
 LAP_DATA_SIZE = 43
 
 
@@ -73,104 +40,20 @@ LAP_DATA_SIZE = 43
 # F1 22 DATA OFFSETS
 # =========================================================
 
-# Packet header:
-#
-# 0-1   packet format
-# 2     game major version
-# 3     game minor version
-# 4     packet version
-# 5     packet ID
-# 6-13  session UID
-# 14-17 session time
-# 18-21 frame identifier
-# 22    player car index
-# 23    secondary player car index
-
 PLAYER_CAR_OFFSET = 22
-
-
-# CarTelemetryData:
-#
-# 0     speed
-# 2     throttle
-# 6     steer
-# 10    brake
-# 14    clutch
-# 15    gear
-# 16    engine RPM
-# 18    DRS
-# 19    rev lights percent
-# 20    rev lights bit value
 
 ENGINE_RPM_OFFSET = 16
 REV_LIGHT_PERCENT_OFFSET = 19
 
-
-# CarStatusData:
-#
-# 0 traction control
-# 1 ABS
-# 2 fuel mix
-# 3 brake bias
-# 4 pit limiter
-# 5 tyre age
-# 6 vehicle FIA flags
-
 FIA_FLAG_OFFSET = 6
-
-# After vehicleFiaFlags:
-#
-# ersStoreEnergy       4 bytes
-# ersDeployMode        1 byte
-# ersHarvestedMGUK     4 bytes
-# ersHarvestedMGUH     4 bytes
-# ersDeployed          4 bytes
-# networkPaused        1 byte
-#
-# Therefore networkPaused = offset 23.
 
 NETWORK_PAUSED_OFFSET = 23
 
-
-# LapData:
-#
-# last lap time       0
-# current lap time    4
-# sector 1            8
-# sector 2            10
-# lap distance        12
-#
 LAP_DISTANCE_OFFSET = 12
 
 
 # =========================================================
 # F1 22 SESSION DATA
-# =========================================================
-#
-# Header = 24
-#
-# weather                  24
-# track temperature        25
-# air temperature          26
-# total laps               27
-# track length             28-29
-# session type             30
-# track ID                 31
-# formula                  32
-# session time left        33-34
-# session duration         35-36
-# pit speed limit          37
-# game paused              38
-# spectating               39
-# spectator car index     40
-# SLI support              41
-# num marshal zones        42
-# marshal zones            43 onward
-#
-# Each MarshalZone:
-#   float zone start       4 bytes
-#   int8  zone flag        1 byte
-#
 # =========================================================
 
 SESSION_GAME_PAUSED_OFFSET = 38
@@ -184,7 +67,7 @@ TRACK_LENGTH_OFFSET = 28
 
 
 # =========================================================
-# FLAG VALUES FROM F1 22
+# FLAG VALUES
 # =========================================================
 
 FLAG_NONE = 0
@@ -221,8 +104,23 @@ marshal_zones = []
 # =========================================================
 # AUTOMATIC RPM
 # =========================================================
+#
+# Current RPM:
+#   rpm
+#
+# Detected car maximum RPM:
+#   car_max_rpm
+#
+# The maximum RPM is detected automatically from the
+# rev light percentage.
+#
+# This is sent to Arduino as:
+#
+#   MAXRPM:xxxxx
+#
+# =========================================================
 
-estimated_max_rpm = 15000
+car_max_rpm = 15000
 
 last_maxrpm_time = 0
 
@@ -230,6 +128,9 @@ MIN_MAX_RPM = 10000
 MAX_MAX_RPM = 20000
 
 MAXRPM_UPDATE_INTERVAL = 2.0
+
+# Used to detect the highest actual RPM reached.
+highest_rpm_seen = 0
 
 
 # =========================================================
@@ -295,6 +196,7 @@ print("UDP Format : 2022")
 print("UDP Port   : 20777")
 print()
 print("REV        : ENABLED")
+print("AUTO RPM   : ENABLED")
 print("YELLOW     : ENABLED")
 print("RED        : ENABLED")
 print("GREEN      : ENABLED")
@@ -617,9 +519,6 @@ def get_current_zone_flag():
     )
 
 
-    # F1 can report negative distance before
-    # the start/finish line.
-
     while distance_fraction < 0:
 
         distance_fraction += 1.0
@@ -650,11 +549,6 @@ def get_current_zone_flag():
                 selected_flag = zone_flag
 
 
-    # -----------------------------------------------------
-    # Only GREEN / YELLOW / RED are used.
-    # BLUE is intentionally ignored.
-    # -----------------------------------------------------
-
     if selected_flag == FLAG_GREEN:
 
         return FLAG_GREEN
@@ -683,10 +577,6 @@ def process_flags(fia_flag):
     global last_zone_flag
 
 
-    # -----------------------------------------------------
-    # FIA FLAG
-    # -----------------------------------------------------
-
     if fia_flag == FLAG_YELLOW:
 
         fia_result = "YELLOW"
@@ -701,13 +591,8 @@ def process_flags(fia_flag):
 
     else:
 
-        # Includes NONE, BLUE and invalid.
         fia_result = "NONE"
 
-
-    # -----------------------------------------------------
-    # MARSHAL ZONE
-    # -----------------------------------------------------
 
     zone_flag = get_current_zone_flag()
 
@@ -728,18 +613,6 @@ def process_flags(fia_flag):
 
         zone_result = "NONE"
 
-
-    # -----------------------------------------------------
-    # PRIORITY
-    #
-    # RED
-    # YELLOW
-    # GREEN
-    # NONE
-    #
-    # This prevents a green marshal zone from overriding
-    # a yellow/red FIA condition.
-    # -----------------------------------------------------
 
     if (
         fia_result == "RED"
@@ -770,10 +643,6 @@ def process_flags(fia_flag):
         result = "NONE"
 
 
-    # -----------------------------------------------------
-    # SEND WHEN FLAG SOURCE CHANGES
-    # -----------------------------------------------------
-
     if (
         fia_flag != last_fia_flag
         or zone_flag != last_zone_flag
@@ -782,8 +651,6 @@ def process_flags(fia_flag):
         last_fia_flag = fia_flag
 
         last_zone_flag = zone_flag
-
-        # Debug information.
 
         print(
             f"\nFIA FLAG VALUE: {fia_flag} | "
@@ -805,12 +672,13 @@ def process_car_telemetry(
 ):
 
     global last_rpm
-    global estimated_max_rpm
+    global car_max_rpm
     global last_maxrpm_time
+    global highest_rpm_seen
 
 
     # -----------------------------------------------------
-    # Player car offset
+    # PLAYER CAR OFFSET
     # -----------------------------------------------------
 
     car_offset = (
@@ -828,7 +696,7 @@ def process_car_telemetry(
 
 
     # -----------------------------------------------------
-    # ENGINE RPM
+    # CURRENT ENGINE RPM
     # -----------------------------------------------------
 
     rpm = struct.unpack_from(
@@ -849,7 +717,16 @@ def process_car_telemetry(
 
 
     # -----------------------------------------------------
-    # SEND RPM
+    # KEEP HIGHEST RPM SEEN
+    # -----------------------------------------------------
+
+    if rpm > highest_rpm_seen:
+
+        highest_rpm_seen = rpm
+
+
+    # -----------------------------------------------------
+    # SEND CURRENT RPM
     # -----------------------------------------------------
 
     if not game_paused:
@@ -862,19 +739,38 @@ def process_car_telemetry(
 
             last_rpm = rpm
 
+
+            # -------------------------------------------------
+            # DEBUG DISPLAY
+            # -------------------------------------------------
+
             print(
                 f"\rRPM: {rpm:5} | "
+                f"MAX RPM: {car_max_rpm:5} | "
+                f"REV: {rev_percent:3}% | "
+                f"PEAK: {highest_rpm_seen:5} | "
                 f"FLAG: {current_flag}     ",
                 end=""
             )
 
 
-    # -----------------------------------------------------
-    # AUTOMATIC MAX RPM
-    # -----------------------------------------------------
+    # =====================================================
+    # AUTOMATIC MAX RPM DETECTION
+    # =====================================================
     #
-    # F1 22 does not provide maxRPM in CarStatusData.
-    # revLightsPercent is therefore used to estimate it.
+    # revLightsPercent reaches approximately 100 when
+    # the car reaches its maximum rev-light threshold.
+    #
+    # Example:
+    #
+    # RPM       REV %
+    # 12000     80
+    # 13500     90
+    # 15000     100
+    #
+    # Estimated max:
+    #
+    # RPM / REV_PERCENT * 100
     #
     # -----------------------------------------------------
 
@@ -883,29 +779,37 @@ def process_car_telemetry(
         and rpm >= MIN_MAX_RPM
     ):
 
-        estimated = int(
+        estimated_max = int(
             rpm * 100
             / rev_percent
         )
 
 
-        estimated = max(
+        estimated_max = max(
             MIN_MAX_RPM,
             min(
                 MAX_MAX_RPM,
-                estimated
+                estimated_max
             )
         )
 
 
-        estimated_max_rpm = int(
-            estimated_max_rpm * 0.90
-            + estimated * 0.10
+        # -------------------------------------------------
+        # Smooth the detected RPM.
+        # -------------------------------------------------
+
+        car_max_rpm = int(
+            car_max_rpm * 0.90
+            + estimated_max * 0.10
         )
 
 
         now = time.monotonic()
 
+
+        # -------------------------------------------------
+        # Send updated max RPM to Arduino.
+        # -------------------------------------------------
 
         if (
             now - last_maxrpm_time
@@ -913,10 +817,16 @@ def process_car_telemetry(
         ):
 
             send(
-                f"MAXRPM:{estimated_max_rpm}"
+                f"MAXRPM:{car_max_rpm}"
             )
 
             last_maxrpm_time = now
+
+
+            print(
+                f"\nMAX RPM UPDATED: "
+                f"{car_max_rpm}"
+            )
 
 
 # =========================================================
@@ -987,10 +897,6 @@ def process_car_status(
 
 def process_event(data):
 
-    # F1 22 header is 24 bytes.
-    #
-    # Event code therefore begins at byte 24.
-
     if len(data) < 28:
 
         return
@@ -1000,10 +906,6 @@ def process_event(data):
         24:28
     ]
 
-
-    # -----------------------------------------------------
-    # RED FLAG
-    # -----------------------------------------------------
 
     if event_code == b"RDFL":
 
@@ -1034,10 +936,6 @@ while True:
 
 
         except socket.timeout:
-
-            # ---------------------------------------------
-            # NO TELEMETRY FOR 3 SECONDS
-            # ---------------------------------------------
 
             if (
                 time.monotonic()
@@ -1100,31 +998,16 @@ while True:
             continue
 
 
-        # -------------------------------------------------
-        # Make sure player index is valid.
-        # -------------------------------------------------
-
         if player_car > 21:
 
             continue
 
 
         # =================================================
-        # DEBUG PACKET
+        # CAR TELEMETRY
         # =================================================
 
         if packet_id == PACKET_CAR_TELEMETRY:
-
-            # Only useful packet information.
-            #
-            # Uncomment the next print if you need it.
-            #
-            # print(
-            #     f"\nPacket ID: {packet_id} | "
-            #     f"Format: {packet_format} | "
-            #     f"Size: {len(data)} | "
-            #     f"Player: {player_car}"
-            # )
 
             process_car_telemetry(
                 data,

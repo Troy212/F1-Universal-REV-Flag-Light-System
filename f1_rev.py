@@ -19,6 +19,32 @@ TELEMETRY_TIMEOUT = 3.0
 
 
 # =========================================================
+# AUTOMATIC RPM DETECTION
+# =========================================================
+
+# Starting estimate
+detected_max_rpm = 12000
+
+# Highest RPM actually observed
+highest_rpm_seen = 0
+
+# Number of consecutive high-RPM observations
+high_rpm_samples = 0
+
+# Only update the detected maximum when the car
+# reaches a sufficiently high RPM.
+RPM_DETECTION_THRESHOLD = 0.90
+
+# Extra headroom above the highest observed RPM.
+# This prevents the REV lights from reaching redline
+# before the actual engine limit.
+RPM_HEADROOM = 1.05
+
+# Minimum RPM change required before sending MAXRPM
+last_sent_max_rpm = 0
+
+
+# =========================================================
 # CONNECT ARDUINO
 # =========================================================
 
@@ -42,9 +68,6 @@ sock = socket.socket(
     socket.AF_INET,
     socket.SOCK_DGRAM
 )
-
-# Short timeout allows us to detect
-# when telemetry stops.
 
 sock.settimeout(0.2)
 
@@ -81,6 +104,99 @@ def send(command):
     arduino.write(
         (command + "\n").encode()
     )
+
+
+# =========================================================
+# SEND MAX RPM
+# =========================================================
+
+def send_max_rpm(rpm):
+
+    global last_sent_max_rpm
+
+    rpm = int(rpm)
+
+    if rpm <= 0:
+        return
+
+    # Avoid constantly sending the same value
+    if abs(rpm - last_sent_max_rpm) < 100:
+        return
+
+    last_sent_max_rpm = rpm
+
+    send(
+        f"MAXRPM:{rpm}"
+    )
+
+    print(
+        f"\nDetected MAX RPM: {rpm}"
+    )
+
+
+# =========================================================
+# AUTOMATIC RPM DETECTION
+# =========================================================
+
+def update_max_rpm(rpm):
+
+    global detected_max_rpm
+    global highest_rpm_seen
+    global high_rpm_samples
+
+    if rpm <= 0:
+        return
+
+    # Keep track of the highest RPM reached
+    if rpm > highest_rpm_seen:
+
+        highest_rpm_seen = rpm
+
+    # -----------------------------------------------------
+    # Detect when the engine is getting close to the
+    # current estimated limit.
+    # -----------------------------------------------------
+
+    if rpm >= (
+        detected_max_rpm *
+        RPM_DETECTION_THRESHOLD
+    ):
+
+        high_rpm_samples += 1
+
+    else:
+
+        high_rpm_samples = 0
+
+
+    # -----------------------------------------------------
+    # Once the RPM has repeatedly reached the upper range,
+    # update the maximum automatically.
+    # -----------------------------------------------------
+
+    if high_rpm_samples >= 10:
+
+        new_max = int(
+            highest_rpm_seen *
+            RPM_HEADROOM
+        )
+
+        # Round to nearest 100 RPM
+        new_max = (
+            (new_max + 50) // 100
+        ) * 100
+
+        # Don't allow the detected value to decrease
+        # while driving.
+        if new_max > detected_max_rpm:
+
+            detected_max_rpm = new_max
+
+            send_max_rpm(
+                detected_max_rpm
+            )
+
+        high_rpm_samples = 0
 
 
 # =========================================================
@@ -140,10 +256,6 @@ while True:
             )
 
         except socket.timeout:
-
-            # ---------------------------------------------
-            # No telemetry
-            # ---------------------------------------------
 
             if (
                 time.monotonic()
@@ -222,12 +334,18 @@ while True:
             )[0]
 
 
-            # ---------------------------------------------
-            # Don't send RPM while paused
-            # or during start lights.
-            #
-            # Arduino also protects the start sequence.
-            # ---------------------------------------------
+            # =================================================
+            # AUTOMATIC MAX RPM DETECTION
+            # =================================================
+
+            update_max_rpm(
+                rpm
+            )
+
+
+            # =================================================
+            # SEND RPM
+            # =================================================
 
             if not game_paused:
 
@@ -236,8 +354,26 @@ while True:
                 )
 
 
+                # =================================================
+                # DEBUG DISPLAY
+                # =================================================
+
+                rpm_percent = (
+                    rpm /
+                    detected_max_rpm
+                ) * 100
+
+
+                if rpm_percent > 100:
+
+                    rpm_percent = 100
+
+
                 print(
-                    f"\rRPM: {rpm:5} | FLAG: {current_flag}",
+                    f"\rRPM: {rpm:5} | "
+                    f"MAX: {detected_max_rpm:5} | "
+                    f"LOAD: {rpm_percent:6.2f}% | "
+                    f"FLAG: {current_flag}",
                     end=""
                 )
 
@@ -254,10 +390,6 @@ while True:
                 continue
 
 
-            # -------------------------------------------------
-            # Track length
-            # -------------------------------------------------
-
             track_length = struct.unpack_from(
                 "<H",
                 data,
@@ -267,8 +399,6 @@ while True:
 
             # -------------------------------------------------
             # GAME PAUSED
-            #
-            # m_gamePaused = byte 38
             # -------------------------------------------------
 
             paused = data[38]
@@ -456,10 +586,6 @@ while True:
 
             if not game_paused:
 
-                # ---------------------------------------------
-                # YELLOW
-                # ---------------------------------------------
-
                 if active_flag == 3:
 
                     if last_zone_flag != 3:
@@ -468,10 +594,6 @@ while True:
 
                         set_flag("YELLOW")
 
-
-                # ---------------------------------------------
-                # RED
-                # ---------------------------------------------
 
                 elif active_flag == 4:
 
@@ -482,10 +604,6 @@ while True:
                         set_flag("RED")
 
 
-                # ---------------------------------------------
-                # BLUE
-                # ---------------------------------------------
-
                 elif active_flag == 2:
 
                     if last_zone_flag != 2:
@@ -495,10 +613,6 @@ while True:
                         set_flag("BLUE")
 
 
-                # ---------------------------------------------
-                # GREEN
-                # ---------------------------------------------
-
                 elif active_flag == 1:
 
                     if last_zone_flag != 1:
@@ -507,10 +621,6 @@ while True:
 
                         set_flag("GREEN")
 
-
-                # ---------------------------------------------
-                # NO FLAG
-                # ---------------------------------------------
 
                 else:
 
@@ -537,8 +647,6 @@ while True:
         # =================================================
         # PACKET 3
         # EVENT DATA
-        #
-        # F1 2020 race start events
         # =================================================
 
         elif packet_id == 3:
@@ -548,23 +656,11 @@ while True:
                 continue
 
 
-            # -------------------------------------------------
-            # Event code
-            #
-            # Header = 24 bytes
-            # Event code = bytes 24-27
-            # Event data = byte 28 onward
-            # -------------------------------------------------
-
             event_code = data[24:28]
 
 
             # =================================================
             # START LIGHTS
-            #
-            # STLG
-            #
-            # Byte 28 = number of red lights
             # =================================================
 
             if event_code == b"STLG":
@@ -591,8 +687,6 @@ while True:
 
             # =================================================
             # LIGHTS OUT
-            #
-            # LGOT
             # =================================================
 
             elif event_code == b"LGOT":
@@ -625,8 +719,6 @@ while True:
             )
 
 
-            # vehicleFiaFlags = +42
-
             fia_offset = (
                 car_offset + 42
             )
@@ -646,36 +738,20 @@ while True:
 
             if not game_paused:
 
-                # ---------------------------------------------
-                # RED
-                # ---------------------------------------------
-
                 if fia_flag == 4:
 
                     set_flag("RED")
 
-
-                # ---------------------------------------------
-                # YELLOW
-                # ---------------------------------------------
 
                 elif fia_flag == 3:
 
                     set_flag("YELLOW")
 
 
-                # ---------------------------------------------
-                # GREEN
-                # ---------------------------------------------
-
                 elif fia_flag == 1:
 
                     set_flag("GREEN")
 
-
-                # ---------------------------------------------
-                # NONE
-                # ---------------------------------------------
 
                 elif fia_flag == 0:
 
