@@ -6,10 +6,11 @@
 // =====================================================
 // LED LAYOUT
 // =====================================================
-
-// 0 - 3   = LEFT FLAG / START LIGHTS
-// 4 - 43  = RPM
-// 44 - 47 = RIGHT FLAG / START LIGHTS
+//
+// 0 - 3   = LEFT FLAG LEDs
+// 4 - 43  = 40 RPM LEDs
+// 44 - 47 = RIGHT FLAG LEDs
+//
 
 #define FLAG_LEFT_START  0
 #define RPM_START        4
@@ -28,6 +29,19 @@ Adafruit_NeoPixel strip(
 // =====================================================
 
 int maxRPM = 12000;
+int currentRPM = 0;
+
+
+// =====================================================
+// SHIFT LIGHT
+// =====================================================
+
+bool shiftActive = false;
+bool shiftBlinkState = false;
+
+unsigned long lastShiftBlink = 0;
+
+const unsigned long SHIFT_BLINK_INTERVAL = 100;
 
 
 // =====================================================
@@ -123,7 +137,72 @@ void loop() {
       int rpm =
         command.substring(4).toInt();
 
+      currentRPM = rpm;
+
+      // RPM command automatically exits shift mode
+      shiftActive = false;
+
       showRPM(rpm);
+    }
+
+
+    // =================================================
+    // MAX RPM
+    // =================================================
+
+    else if (command.startsWith("MAXRPM:")) {
+
+      int detectedRPM =
+        command.substring(7).toInt();
+
+      if (detectedRPM > 0) {
+
+        maxRPM = detectedRPM;
+
+        Serial.print("MAX RPM: ");
+        Serial.println(maxRPM);
+
+        if (!raceStartActive && !shiftActive) {
+
+          showRPM(currentRPM);
+        }
+      }
+    }
+
+
+    // =================================================
+    // SHIFT
+    // =================================================
+
+    else if (command == "SHIFT") {
+
+      if (!raceStartActive) {
+
+        shiftActive = true;
+
+        shiftBlinkState = true;
+
+        lastShiftBlink = millis();
+
+        showShiftLights();
+      }
+    }
+
+
+    // =================================================
+    // SHIFT OFF
+    // =================================================
+
+    else if (command == "SHIFT_OFF") {
+
+      shiftActive = false;
+
+      shiftBlinkState = false;
+
+      if (!raceStartActive) {
+
+        showRPM(currentRPM);
+      }
     }
 
 
@@ -132,8 +211,6 @@ void loop() {
     // =================================================
 
     else if (command == "YELLOW") {
-
-      // Don't overwrite race start lights
 
       if (!raceStartActive) {
 
@@ -229,6 +306,10 @@ void loop() {
 
       startLights = 0;
 
+      currentRPM = 0;
+
+      shiftActive = false;
+
       clearAll();
 
       strip.show();
@@ -237,12 +318,6 @@ void loop() {
 
     // =================================================
     // RACE START LIGHTS
-    //
-    // START:1
-    // START:2
-    // START:3
-    // START:4
-    // START:5
     // =================================================
 
     else if (command.startsWith("START:")) {
@@ -264,28 +339,11 @@ void loop() {
 
       startLights = 0;
 
+      shiftActive = false;
+
       clearAll();
 
       strip.show();
-    }
-
-
-    // =================================================
-    // MAX RPM
-    // =================================================
-
-    else if (command.startsWith("MAXRPM:")) {
-
-      int detectedRPM =
-        command.substring(7).toInt();
-
-      if (detectedRPM > 0) {
-
-        maxRPM = detectedRPM;
-
-        Serial.print("MAX RPM: ");
-        Serial.println(maxRPM);
-      }
     }
   }
 
@@ -305,11 +363,35 @@ void loop() {
 
     startLights = 0;
 
+    currentRPM = 0;
+
+    shiftActive = false;
+
     clearAll();
 
     strip.show();
 
     lastCommandTime = millis();
+  }
+
+
+  // ===================================================
+  // SHIFT LIGHT BLINK
+  // ===================================================
+
+  if (shiftActive && !raceStartActive) {
+
+    if (
+      millis() - lastShiftBlink >=
+      SHIFT_BLINK_INTERVAL
+    ) {
+
+      lastShiftBlink = millis();
+
+      shiftBlinkState = !shiftBlinkState;
+
+      showShiftLights();
+    }
   }
 
 
@@ -334,7 +416,7 @@ void loop() {
 
 
   // ===================================================
-  // BLINK YELLOW / RED / BLUE
+  // BLINK FLAGS
   // ===================================================
 
   if (
@@ -361,10 +443,22 @@ void loop() {
 // =====================================================
 // RPM LIGHTS
 // =====================================================
+//
+// 40 LEDs = 20 pairs.
+//
+// RPM progression:
+//
+// 0%  → 60%  = GREEN
+// 60% → 80%  = YELLOW
+// 80% → 90%  = ORANGE
+// 90% → 100% = RED
+//
+// The colors are distributed across ALL 20 pairs.
+//
 
 void showRPM(int rpm) {
 
-  // Don't let RPM overwrite start lights
+  // Don't overwrite race start lights
 
   if (raceStartActive) {
 
@@ -372,7 +466,23 @@ void showRPM(int rpm) {
   }
 
 
-  rpm = constrain(
+  // Don't overwrite shift lights
+
+  if (shiftActive) {
+
+    return;
+  }
+
+
+  // Safety
+
+  if (maxRPM <= 0) {
+
+    maxRPM = 12000;
+  }
+
+
+  currentRPM = constrain(
     rpm,
     0,
     maxRPM
@@ -380,33 +490,40 @@ void showRPM(int rpm) {
 
 
   // ===================================================
-  // 40 RPM LEDs
-  //
-  // OUTSIDE → CENTER
-  //
-  // LEFT       RIGHT
-  //
-  // 4   +   43
-  // 5   +   42
-  // 6   +   41
-  // ...
-  // 23  +   24
+  // RPM PERCENTAGE
+  // ===================================================
+
+  float rpmPercent =
+    (float)currentRPM /
+    (float)maxRPM;
+
+  rpmPercent = constrain(
+    rpmPercent,
+    0.0,
+    1.0
+  );
+
+
+  // ===================================================
+  // 20 PAIRS
   // ===================================================
 
   const int totalPairs = 20;
 
+  int pairs = (int)(
+    rpmPercent *
+    totalPairs
+  );
 
-  int pairs = map(
-    rpm,
-    0,
-    maxRPM,
+  pairs = constrain(
+    pairs,
     0,
     totalPairs
   );
 
 
   // ===================================================
-  // CLEAR RPM SECTION
+  // CLEAR RPM LEDs
   // ===================================================
 
   for (
@@ -423,7 +540,7 @@ void showRPM(int rpm) {
 
 
   // ===================================================
-  // OUTSIDE → CENTER
+  // LIGHT PAIRS
   // ===================================================
 
   for (
@@ -444,6 +561,10 @@ void showRPM(int rpm) {
 
     // =================================================
     // GREEN
+    //
+    // PAIRS 0 - 11
+    // 12 PAIRS
+    // 60%
     // =================================================
 
     if (pair < 12) {
@@ -458,6 +579,10 @@ void showRPM(int rpm) {
 
     // =================================================
     // YELLOW
+    //
+    // PAIRS 12 - 15
+    // 4 PAIRS
+    // 20%
     // =================================================
 
     else if (pair < 16) {
@@ -472,6 +597,10 @@ void showRPM(int rpm) {
 
     // =================================================
     // ORANGE
+    //
+    // PAIRS 16 - 17
+    // 2 PAIRS
+    // 10%
     // =================================================
 
     else if (pair < 18) {
@@ -485,7 +614,11 @@ void showRPM(int rpm) {
 
 
     // =================================================
-    // REDLINE
+    // RED
+    //
+    // PAIRS 18 - 19
+    // 2 PAIRS
+    // 10%
     // =================================================
 
     else {
@@ -499,7 +632,7 @@ void showRPM(int rpm) {
 
 
     // =================================================
-    // BOTH SIDES
+    // LEFT + RIGHT
     // =================================================
 
     strip.setPixelColor(
@@ -519,24 +652,77 @@ void showRPM(int rpm) {
 
 
 // =====================================================
-// RACE START LIGHTS
+// SHIFT LIGHTS
 // =====================================================
 //
-// Uses ONLY the 8 flag LEDs.
+// ALL 40 RPM LEDs blink together.
 //
-// LEFT:
-// 0 1 2 3
+// ON  = all red
+// OFF = all off
 //
-// RIGHT:
-// 44 45 46 47
+// This is triggered by:
+// SHIFT
 //
-// START:1 = 2 LEDs
-// START:2 = 4 LEDs
-// START:3 = 6 LEDs
-// START:4 = 8 LEDs
-// START:5 = 8 LEDs
+// And cancelled by:
+// RPM:xxxx
+// SHIFT_OFF
 //
-// LIGHTSOUT = all 8 OFF
+
+void showShiftLights() {
+
+  if (raceStartActive) {
+
+    return;
+  }
+
+
+  // ===================================================
+  // CLEAR RPM SECTION
+  // ===================================================
+
+  for (
+    int i = RPM_START;
+    i <= RPM_END;
+    i++
+  ) {
+
+    strip.setPixelColor(
+      i,
+      0
+    );
+  }
+
+
+  // ===================================================
+  // SHIFT ON
+  // ===================================================
+
+  if (shiftBlinkState) {
+
+    for (
+      int i = RPM_START;
+      i <= RPM_END;
+      i++
+    ) {
+
+      strip.setPixelColor(
+        i,
+        strip.Color(
+          255,
+          0,
+          0
+        )
+      );
+    }
+  }
+
+
+  strip.show();
+}
+
+
+// =====================================================
+// RACE START LIGHTS
 // =====================================================
 
 void startRaceLights(int lights) {
@@ -547,13 +733,11 @@ void startRaceLights(int lights) {
     5
   );
 
-
   raceStartActive = true;
 
   startLights = lights;
 
-
-  // Clear ONLY flag LEDs
+  shiftActive = false;
 
   clearFlags();
 
@@ -632,8 +816,6 @@ void startRaceLights(int lights) {
 
   // ===================================================
   // START 5
-  //
-  // F1's fifth stage keeps all 8 illuminated.
   // ===================================================
 
   if (lights >= 5) {
@@ -663,15 +845,10 @@ void startRaceLights(int lights) {
 
 void showFlag() {
 
-  // Race start has priority
-
   if (raceStartActive) {
 
     return;
   }
-
-
-  // Clear only the 8 flag LEDs
 
   clearFlags();
 
@@ -753,6 +930,7 @@ void showFlag() {
     );
   }
 
+
   else {
 
     return;
@@ -760,7 +938,7 @@ void showFlag() {
 
 
   // ===================================================
-  // LEFT 4
+  // LEFT FLAGS
   // ===================================================
 
   for (int i = 0; i < 4; i++) {
@@ -773,7 +951,7 @@ void showFlag() {
 
 
   // ===================================================
-  // RIGHT 4
+  // RIGHT FLAGS
   // ===================================================
 
   for (int i = 0; i < 4; i++) {
@@ -790,7 +968,7 @@ void showFlag() {
 
 
 // =====================================================
-// CLEAR FLAG LEDs ONLY
+// CLEAR FLAGS
 // =====================================================
 
 void clearFlags() {
@@ -811,7 +989,7 @@ void clearFlags() {
 
 
 // =====================================================
-// CLEAR ALL 48 LEDs
+// CLEAR ALL
 // =====================================================
 
 void clearAll() {

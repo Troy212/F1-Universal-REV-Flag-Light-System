@@ -16,6 +16,9 @@ ARDUINO_BAUD = 9600
 
 TELEMETRY_TIMEOUT = 3.0
 
+# Added: Arduino heartbeat
+HEARTBEAT_INTERVAL = 1.0
+
 
 # =========================================================
 # F1 22 PACKET CONSTANTS
@@ -102,6 +105,26 @@ marshal_zones = []
 
 
 # =========================================================
+# ADDED STATE
+# =========================================================
+
+# Arduino heartbeat
+last_heartbeat_time = time.monotonic()
+
+# Shift light state
+shift_active = False
+
+# Race start state
+race_start_active = False
+
+# Last event
+last_event_code = None
+
+# Last start-light count
+last_start_light_count = -1
+
+
+# =========================================================
 # AUTOMATIC RPM
 # =========================================================
 #
@@ -110,13 +133,6 @@ marshal_zones = []
 #
 # Detected car maximum RPM:
 #   car_max_rpm
-#
-# The maximum RPM is detected automatically from the
-# rev light percentage.
-#
-# This is sent to Arduino as:
-#
-#   MAXRPM:xxxxx
 #
 # =========================================================
 
@@ -129,7 +145,6 @@ MAX_MAX_RPM = 20000
 
 MAXRPM_UPDATE_INTERVAL = 2.0
 
-# Used to detect the highest actual RPM reached.
 highest_rpm_seen = 0
 
 
@@ -197,10 +212,13 @@ print("UDP Port   : 20777")
 print()
 print("REV        : ENABLED")
 print("AUTO RPM   : ENABLED")
+print("SHIFT      : ENABLED")
 print("YELLOW     : ENABLED")
 print("RED        : ENABLED")
 print("GREEN      : ENABLED")
-print("BLUE       : DISABLED")
+print("BLUE       : ENABLED")
+print("START      : ENABLED")
+print("LIGHTS OUT : ENABLED")
 print()
 print("Waiting for F1 22 telemetry...")
 print("Drive the car.")
@@ -219,11 +237,124 @@ def send(command):
             (command + "\n").encode()
         )
 
+        arduino.flush()
+
     except Exception as e:
 
         print(
             f"\nArduino error: {e}"
         )
+
+
+# =========================================================
+# ARDUINO HEARTBEAT
+# =========================================================
+#
+# Added so the Arduino watchdog does not shut the LEDs off
+# simply because RPM/flags did not change.
+#
+# =========================================================
+
+def heartbeat():
+
+    global last_heartbeat_time
+
+    now = time.monotonic()
+
+    if (
+        now - last_heartbeat_time
+        >= HEARTBEAT_INTERVAL
+    ):
+
+        try:
+
+            arduino.write(
+                b"PING\n"
+            )
+
+            arduino.flush()
+
+        except Exception as e:
+
+            print(
+                f"\nArduino heartbeat error: {e}"
+            )
+
+        last_heartbeat_time = now
+
+
+# =========================================================
+# STARTUP LED TEST
+# =========================================================
+
+def startup_led_test():
+
+    print()
+    print("==============================")
+    print("      ARDUINO LED TEST")
+    print("==============================")
+
+    print()
+    print("Testing GREEN...")
+
+    send("OFF")
+
+    time.sleep(0.5)
+
+    send("GREEN")
+
+    time.sleep(1)
+
+
+    print("Testing YELLOW...")
+
+    send("YELLOW")
+
+    time.sleep(1)
+
+
+    print("Testing RED...")
+
+    send("RED")
+
+    time.sleep(1)
+
+
+    print("Testing BLUE...")
+
+    send("BLUE")
+
+    time.sleep(1)
+
+
+    print("Testing RPM...")
+
+    send("MAXRPM:12000")
+
+    send("RPM:6000")
+
+    time.sleep(1)
+
+
+    print("Testing SHIFT...")
+
+    send("SHIFT")
+
+    time.sleep(1)
+
+
+    print("Turning LEDs OFF...")
+
+    send("OFF")
+
+    time.sleep(0.5)
+
+    print()
+    print("LED TEST FINISHED.")
+    print()
+
+
+startup_led_test()
 
 
 # =========================================================
@@ -237,6 +368,9 @@ def turn_off():
     global last_rpm
     global last_fia_flag
     global last_zone_flag
+    global shift_active
+    global race_start_active
+    global last_start_light_count
 
     current_flag = "NONE"
 
@@ -244,6 +378,12 @@ def turn_off():
 
     last_fia_flag = None
     last_zone_flag = None
+
+    shift_active = False
+
+    race_start_active = False
+
+    last_start_light_count = -1
 
     send("NONE")
     send("OFF")
@@ -269,7 +409,8 @@ def set_flag(flag):
     if flag in (
         "YELLOW",
         "RED",
-        "GREEN"
+        "GREEN",
+        "BLUE"
     ):
 
         send(flag)
@@ -289,6 +430,54 @@ def set_flag(flag):
         print(
             "\nFLAG CLEARED"
         )
+
+
+# =========================================================
+# SHIFT LIGHTS
+# =========================================================
+#
+# Uses F1 22 revLightsPercent.
+#
+# 95%+ = SHIFT
+# below 95% = SHIFT_OFF
+#
+# =========================================================
+
+def process_shift(rev_percent):
+
+    global shift_active
+
+    if game_paused:
+        return
+
+    if race_start_active:
+        return
+
+    if rev_percent >= 95:
+
+        if not shift_active:
+
+            shift_active = True
+
+            send("SHIFT")
+
+            print(
+                f"\nSHIFT LIGHT ON "
+                f"({rev_percent}%)"
+            )
+
+    else:
+
+        if shift_active:
+
+            shift_active = False
+
+            send("SHIFT_OFF")
+
+            print(
+                f"\nSHIFT LIGHT OFF "
+                f"({rev_percent}%)"
+            )
 
 
 # =========================================================
@@ -589,6 +778,10 @@ def process_flags(fia_flag):
 
         fia_result = "GREEN"
 
+    elif fia_flag == FLAG_BLUE:
+
+        fia_result = "BLUE"
+
     else:
 
         fia_result = "NONE"
@@ -614,6 +807,16 @@ def process_flags(fia_flag):
         zone_result = "NONE"
 
 
+    # -----------------------------------------------------
+    # FLAG PRIORITY
+    #
+    # RED
+    # YELLOW
+    # BLUE
+    # GREEN
+    # NONE
+    # -----------------------------------------------------
+
     if (
         fia_result == "RED"
         or zone_result == "RED"
@@ -628,6 +831,11 @@ def process_flags(fia_flag):
     ):
 
         result = "YELLOW"
+
+
+    elif fia_result == "BLUE":
+
+        result = "BLUE"
 
 
     elif (
@@ -740,10 +948,6 @@ def process_car_telemetry(
             last_rpm = rpm
 
 
-            # -------------------------------------------------
-            # DEBUG DISPLAY
-            # -------------------------------------------------
-
             print(
                 f"\rRPM: {rpm:5} | "
                 f"MAX RPM: {car_max_rpm:5} | "
@@ -755,24 +959,17 @@ def process_car_telemetry(
 
 
     # =====================================================
+    # ADDED SHIFT LIGHT SYSTEM
+    # =====================================================
+
+    process_shift(
+        rev_percent
+    )
+
+
+    # =====================================================
     # AUTOMATIC MAX RPM DETECTION
     # =====================================================
-    #
-    # revLightsPercent reaches approximately 100 when
-    # the car reaches its maximum rev-light threshold.
-    #
-    # Example:
-    #
-    # RPM       REV %
-    # 12000     80
-    # 13500     90
-    # 15000     100
-    #
-    # Estimated max:
-    #
-    # RPM / REV_PERCENT * 100
-    #
-    # -----------------------------------------------------
 
     if (
         rev_percent >= 95
@@ -795,7 +992,7 @@ def process_car_telemetry(
 
 
         # -------------------------------------------------
-        # Smooth the detected RPM.
+        # Smooth detected RPM
         # -------------------------------------------------
 
         car_max_rpm = int(
@@ -808,7 +1005,7 @@ def process_car_telemetry(
 
 
         # -------------------------------------------------
-        # Send updated max RPM to Arduino.
+        # Send MAXRPM
         # -------------------------------------------------
 
         if (
@@ -897,6 +1094,12 @@ def process_car_status(
 
 def process_event(data):
 
+    global last_event_code
+    global race_start_active
+    global last_start_light_count
+    global shift_active
+
+
     if len(data) < 28:
 
         return
@@ -907,13 +1110,161 @@ def process_event(data):
     ]
 
 
-    if event_code == b"RDFL":
+    # -----------------------------------------------------
+    # Prevent repeated processing
+    # -----------------------------------------------------
 
-        if not game_paused:
+    event_string = event_code.decode(
+        "ascii",
+        errors="ignore"
+    )
 
-            set_flag(
-                "RED"
+
+    # =====================================================
+    # SESSION START
+    # =====================================================
+
+    if event_string == "SSTA":
+
+        if last_event_code != event_string:
+
+            print(
+                "\nSESSION STARTED"
             )
+
+        last_event_code = event_string
+
+        return
+
+
+    # =====================================================
+    # SESSION END
+    # =====================================================
+
+    if event_string == "SEND":
+
+        if last_event_code != event_string:
+
+            print(
+                "\nSESSION ENDED"
+            )
+
+            turn_off()
+
+        last_event_code = event_string
+
+        return
+
+
+    # =====================================================
+    # START LIGHTS
+    # =====================================================
+    #
+    # F1 22 STLG event contains the number of start lights
+    # in the event data.
+    #
+    # Byte 28 = number of lights.
+    #
+    # =====================================================
+
+    if event_string == "STLG":
+
+        if len(data) >= 29:
+
+            start_light_count = data[28]
+
+            start_light_count = max(
+                0,
+                min(
+                    5,
+                    start_light_count
+                )
+            )
+
+
+            if (
+                start_light_count
+                !=
+                last_start_light_count
+            ):
+
+                last_start_light_count = (
+                    start_light_count
+                )
+
+                race_start_active = True
+
+                shift_active = False
+
+                send(
+                    f"START:{start_light_count}"
+                )
+
+
+                print(
+                    f"\nRACE START LIGHTS: "
+                    f"{start_light_count}"
+                )
+
+
+        last_event_code = event_string
+
+        return
+
+
+    # =====================================================
+    # LIGHTS OUT
+    # =====================================================
+
+    if event_string == "LGOT":
+
+        race_start_active = False
+
+        last_start_light_count = -1
+
+        shift_active = False
+
+        print(
+            "\nLIGHTS OUT!"
+        )
+
+        send(
+            "LIGHTSOUT"
+        )
+
+        last_event_code = event_string
+
+        return
+
+
+    # =====================================================
+    # RED FLAG EVENT
+    # =====================================================
+
+    if event_string == "RDFL":
+
+        race_start_active = False
+
+        shift_active = False
+
+        print(
+            "\nRED FLAG EVENT"
+        )
+
+        set_flag(
+            "RED"
+        )
+
+        last_event_code = event_string
+
+        return
+
+
+    # =====================================================
+    # DEFAULT EVENT
+    # =====================================================
+
+    last_event_code = event_string
 
 
 # =========================================================
@@ -923,6 +1274,13 @@ def process_event(data):
 while True:
 
     try:
+
+        # =================================================
+        # ARDUINO HEARTBEAT
+        # =================================================
+
+        heartbeat()
+
 
         # =================================================
         # RECEIVE UDP
@@ -948,7 +1306,9 @@ while True:
                     turn_off()
 
                     print(
-                        "\nNo telemetry for 3 seconds - LEDs OFF"
+                        "\nNo telemetry for "
+                        f"{TELEMETRY_TIMEOUT} seconds "
+                        "- LEDs OFF"
                     )
 
             continue
